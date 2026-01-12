@@ -1,23 +1,50 @@
- import http from 'http';
+import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
+import fetch from 'node-fetch';
 
 const PORT = Number(process.env.PORT || 10000);
 
 const app = express();
-app.use(cors());
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+}));
+
+app.options('*', cors());
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-/*
-rooms: Map<roomId, {
-  peers: Map<WebSocket, senderId>,
-  offer: null | object,
-  answer: null | object
-}>
-*/
+/* ───────────────── TURN ENDPOINT ───────────────── */
+
+app.get('/turn', async (_, res) => {
+  try {
+    const response = await fetch(process.env.TURN_ENDPOINT, {
+      headers: {
+        Authorization: `Bearer ${process.env.TURN_API_KEY}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      res.status(502).json({ error: 'TURN upstream failure' });
+      return;
+    }
+
+    const data = await response.json();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(data);
+  } catch {
+    res.status(500).json({ error: 'TURN service unavailable' });
+  }
+});
+
+/* ───────────────── SIGNALING ───────────────── */
+
 const rooms = new Map();
 
 function send(ws, msg) {
@@ -70,9 +97,8 @@ wss.on('connection', (ws) => {
       r.peers.set(ws, sender);
 
       const peers = Array.from(r.peers.values());
-      const offererId = peers[0]; // first joiner only
+      const offererId = peers[0];
 
-      // Notify all peers
       for (const peerWs of r.peers.keys()) {
         send(peerWs, {
           type: 'peer-present',
@@ -83,7 +109,6 @@ wss.on('connection', (ws) => {
           },
         });
       }
-
       return;
     }
 
@@ -92,22 +117,13 @@ wss.on('connection', (ws) => {
     if (!r) return;
 
     if (type === 'offer') {
-      // Always overwrite stale offers
-      r.offer = {
-        type: 'offer',
-        room: joinedRoom,
-        payload,
-      };
+      r.offer = { type: 'offer', room: joinedRoom, payload };
       broadcast(joinedRoom, ws, r.offer);
       return;
     }
 
     if (type === 'answer') {
-      r.answer = {
-        type: 'answer',
-        room: joinedRoom,
-        payload,
-      };
+      r.answer = { type: 'answer', room: joinedRoom, payload };
       broadcast(joinedRoom, ws, r.answer);
       return;
     }
@@ -123,19 +139,14 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (!joinedRoom) return;
-
     const r = rooms.get(joinedRoom);
     if (!r) return;
 
     r.peers.delete(ws);
-
-    // HARD RESET when any peer leaves
-    if (r.peers.size < 2) {
-      destroyRoom(joinedRoom);
-    }
+    if (r.peers.size < 2) destroyRoom(joinedRoom);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`Hi Presence signaling running on ${PORT}`);
+  console.log(`Hi Presence signaling + TURN running on ${PORT}`);
 });

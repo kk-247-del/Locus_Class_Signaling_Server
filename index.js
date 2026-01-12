@@ -7,20 +7,13 @@ const PORT = Number(process.env.PORT || 8080);
 
 const app = express();
 app.use(cors());
- 
-/* ───────── HEALTH CHECK (CRITICAL) ───────── */
-app.get('/', (_, res) => {
-  res.status(200).send('Hi Presence signaling alive');
-});                             
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 /*
 rooms: Map<roomId, {
-  peers: Map<WebSocket, senderId>,
-  offer: object | null,
-  answer: object | null
+  peers: Set<WebSocket>,
 }>
 */
 const rooms = new Map();
@@ -35,26 +28,15 @@ function broadcast(roomId, except, msg) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  for (const ws of room.peers.keys()) {
+  for (const ws of room.peers) {
     if (ws !== except && ws.readyState === ws.OPEN) {
       send(ws, msg);
     }
   }
 }
 
-function maybeReady(roomId) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-
-  if (room.offer && room.answer) {
-    for (const ws of room.peers.keys()) {
-      send(ws, {
-        type: 'moment-ready',
-        room: roomId,
-        payload: {},
-      });
-    }
-  }
+function destroyRoom(roomId) {
+  rooms.delete(roomId);
 }
 
 wss.on('connection', (ws) => {
@@ -68,7 +50,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    const { type, room, payload, sender } = msg;
+    const { type, room, payload } = msg;
     if (!type || !room) return;
 
     /* ───────── JOIN ───────── */
@@ -76,60 +58,39 @@ wss.on('connection', (ws) => {
       joinedRoom = room;
 
       if (!rooms.has(room)) {
-        rooms.set(room, {
-          peers: new Map(),
-          offer: null,
-          answer: null,
-        });
+        rooms.set(room, { peers: new Set() });
       }
 
       const r = rooms.get(room);
-      r.peers.set(ws, sender);
+      r.peers.add(ws);
 
-      const peers = Array.from(r.peers.values());
-      const offererId = peers[0];
+      const peers = Array.from(r.peers);
+      const offererIndex = 0;
 
-      for (const peerWs of r.peers.keys()) {
-        send(peerWs, {
+      for (let i = 0; i < peers.length; i++) {
+        send(peers[i], {
           type: 'peer-present',
           room,
           payload: {
-            count: r.peers.size,
-            offererId,
+            count: peers.length,
+            offerer: i === offererIndex,
           },
         });
       }
 
-      if (r.offer) send(ws, r.offer);
-      if (r.answer) send(ws, r.answer);
-
-      maybeReady(room);
       return;
     }
 
     if (!joinedRoom) return;
-    const r = rooms.get(joinedRoom);
-    if (!r) return;
 
-    /* ───────── OFFER ───────── */
-    if (type === 'offer' && !r.offer) {
-      r.offer = { type: 'offer', room: joinedRoom, payload };
-      broadcast(joinedRoom, ws, r.offer);
-      return;
-    }
-
-    /* ───────── ANSWER ───────── */
-    if (type === 'answer' && !r.answer) {
-      r.answer = { type: 'answer', room: joinedRoom, payload };
-      broadcast(joinedRoom, ws, r.answer);
-      maybeReady(joinedRoom);
-      return;
-    }
-
-    /* ───────── ICE ───────── */
-    if (type === 'candidate') {
+    /* ───────── SDP / ICE ───────── */
+    if (
+      type === 'offer' ||
+      type === 'answer' ||
+      type === 'candidate'
+    ) {
       broadcast(joinedRoom, ws, {
-        type: 'candidate',
+        type,
         room: joinedRoom,
         payload,
       });
@@ -138,16 +99,22 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (!joinedRoom) return;
+
     const r = rooms.get(joinedRoom);
     if (!r) return;
 
     r.peers.delete(ws);
+
     if (r.peers.size === 0) {
-      rooms.delete(joinedRoom);
+      destroyRoom(joinedRoom);
     }
+  });
+
+  ws.on('error', () => {
+    ws.close();
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, () => {
   console.log(`Hi Presence signaling running on ${PORT}`);
 });

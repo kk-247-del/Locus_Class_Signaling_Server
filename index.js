@@ -1,9 +1,9 @@
-import http from 'http';
+ import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
 
-const PORT = Number(process.env.PORT || 8080);
+const PORT = Number(process.env.PORT || 10000);
 
 const app = express();
 app.use(cors());
@@ -13,7 +13,7 @@ const wss = new WebSocketServer({ server });
 
 /*
 rooms: Map<roomId, {
-  peers: Set<WebSocket>,
+  peers: Map<WebSocket, senderId>
 }>
 */
 const rooms = new Map();
@@ -28,15 +28,11 @@ function broadcast(roomId, except, msg) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  for (const ws of room.peers) {
+  for (const ws of room.peers.keys()) {
     if (ws !== except && ws.readyState === ws.OPEN) {
       send(ws, msg);
     }
   }
-}
-
-function destroyRoom(roomId) {
-  rooms.delete(roomId);
 }
 
 wss.on('connection', (ws) => {
@@ -50,7 +46,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    const { type, room, payload } = msg;
+    const { type, room, payload, sender } = msg;
     if (!type || !room) return;
 
     /* ───────── JOIN ───────── */
@@ -58,24 +54,38 @@ wss.on('connection', (ws) => {
       joinedRoom = room;
 
       if (!rooms.has(room)) {
-        rooms.set(room, { peers: new Set() });
+        rooms.set(room, {
+          peers: new Map(),
+        });
       }
 
       const r = rooms.get(room);
-      r.peers.add(ws);
+      r.peers.set(ws, sender);
 
-      const peers = Array.from(r.peers);
-      const offererIndex = 0;
+      const peers = Array.from(r.peers.values());
+      const offererId = peers[0]; // first joiner is offerer
 
-      for (let i = 0; i < peers.length; i++) {
-        send(peers[i], {
+      // Notify all peers
+      for (const peerWs of r.peers.keys()) {
+        send(peerWs, {
           type: 'peer-present',
           room,
           payload: {
-            count: peers.length,
-            offerer: i === offererIndex,
+            count: r.peers.size,
+            offererId,
           },
         });
+      }
+
+      // If quorum reached (2), declare ready
+      if (r.peers.size === 2) {
+        for (const peerWs of r.peers.keys()) {
+          send(peerWs, {
+            type: 'moment-ready',
+            room,
+            payload: {},
+          });
+        }
       }
 
       return;
@@ -83,12 +93,8 @@ wss.on('connection', (ws) => {
 
     if (!joinedRoom) return;
 
-    /* ───────── SDP / ICE ───────── */
-    if (
-      type === 'offer' ||
-      type === 'answer' ||
-      type === 'candidate'
-    ) {
+    /* ───────── OFFER / ANSWER / ICE ───────── */
+    if (type === 'offer' || type === 'answer' || type === 'candidate') {
       broadcast(joinedRoom, ws, {
         type,
         room: joinedRoom,
@@ -99,19 +105,13 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (!joinedRoom) return;
-
     const r = rooms.get(joinedRoom);
     if (!r) return;
 
     r.peers.delete(ws);
-
     if (r.peers.size === 0) {
-      destroyRoom(joinedRoom);
+      rooms.delete(joinedRoom);
     }
-  });
-
-  ws.on('error', () => {
-    ws.close();
   });
 });
 

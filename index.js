@@ -8,23 +8,19 @@ const TURN_ENDPOINT = process.env.TURN_ENDPOINT;
 
 const app = express();
 
-/* ───────────────── CORS ───────────────── */
+/* ───────────── CORS ───────────── */
 
 app.use(
   cors({
     origin: '*',
     methods: ['GET', 'OPTIONS'],
-    allowedHeaders: ['Content-Type'],
+    allowedHeaders: ['Content-Type', 'Cache-Control'],
   }),
 );
 
 app.options('*', cors());
 
-/* ───────────────── HTTP SERVER ───────────────── */
-
-const server = http.createServer(app);
-
-/* ───────────────── TURN ENDPOINT ───────────────── */
+/* ───────────── TURN ───────────── */
 
 app.get('/turn', async (_, res) => {
   if (!TURN_ENDPOINT) {
@@ -33,31 +29,30 @@ app.get('/turn', async (_, res) => {
   }
 
   try {
-    const response = await fetch(TURN_ENDPOINT, {
+    const r = await fetch(TURN_ENDPOINT, {
       headers: { Accept: 'application/json' },
     });
 
-    if (!response.ok) {
+    if (!r.ok) {
       res.status(502).json({ error: 'TURN upstream failure' });
       return;
     }
 
-    const data = await response.json();
+    const data = await r.json();
     res.setHeader('Cache-Control', 'no-store');
     res.json(data);
   } catch {
-    res.status(500).json({ error: 'TURN service unavailable' });
+    res.status(500).json({ error: 'TURN unavailable' });
   }
 });
 
-/* ───────────────── WEBSOCKET SIGNALING ───────────────── */
+/* ───────────── SIGNALING ───────────── */
 
+const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 /*
-rooms: Map<roomId, {
-  peers: Map<WebSocket, senderId>
-}>
+rooms: Map<roomId, Map<WebSocket, senderId>>
 */
 const rooms = new Map();
 
@@ -67,22 +62,11 @@ function send(ws, msg) {
   }
 }
 
-function broadcast(roomId, except, msg) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-
-  for (const ws of room.peers.keys()) {
-    if (ws !== except && ws.readyState === ws.OPEN) {
-      send(ws, msg);
-    }
-  }
-}
-
 function destroyRoom(roomId) {
-  const room = rooms.get(roomId);
-  if (!room) return;
+  const peers = rooms.get(roomId);
+  if (!peers) return;
 
-  for (const ws of room.peers.keys()) {
+  for (const ws of peers.keys()) {
     try {
       ws.close();
     } catch {}
@@ -93,7 +77,7 @@ function destroyRoom(roomId) {
 }
 
 wss.on('connection', (ws) => {
-  let joinedRoom = null;
+  let roomId = null;
 
   ws.on('message', (raw) => {
     let msg;
@@ -103,54 +87,68 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    const { type, room, payload, sender } = msg;
+    const { type, room, sender, payload } = msg;
     if (!type || !room) return;
 
     if (type === 'join') {
-      joinedRoom = room;
+      roomId = room;
 
-      destroyRoom(room);
+      if (!rooms.has(room)) {
+        rooms.set(room, new Map());
+      }
 
-      rooms.set(room, {
-        peers: new Map([[ws, sender]]),
-      });
+      const peers = rooms.get(room);
 
-      send(ws, {
-        type: 'peer-present',
-        room,
-        payload: {
-          count: 1,
-          offererId: sender,
-        },
-      });
+      // Enforce max 2 peers
+      if (peers.size >= 2) {
+        destroyRoom(room);
+        rooms.set(room, new Map());
+      }
 
-      console.log(`[ROOM] ${room} joined by ${sender}`);
+      peers.set(ws, sender);
+
+      const offererId = peers.values().next().value;
+
+      for (const p of peers.keys()) {
+        send(p, {
+          type: 'peer-present',
+          room,
+          payload: {
+            count: peers.size,
+            offererId,
+          },
+        });
+      }
+
       return;
     }
 
-    if (!joinedRoom) return;
+    if (!roomId) return;
 
     if (type === 'offer' || type === 'answer' || type === 'candidate') {
-      broadcast(joinedRoom, ws, {
-        type,
-        room: joinedRoom,
-        payload,
-      });
+      const peers = rooms.get(roomId);
+      if (!peers) return;
+
+      for (const p of peers.keys()) {
+        if (p !== ws) {
+          send(p, { type, room: roomId, payload });
+        }
+      }
     }
   });
 
   ws.on('close', () => {
-    if (!joinedRoom) return;
-    destroyRoom(joinedRoom);
+    if (!roomId) return;
+    destroyRoom(roomId);
   });
 
   ws.on('error', () => {
-    if (!joinedRoom) return;
-    destroyRoom(joinedRoom);
+    if (!roomId) return;
+    destroyRoom(roomId);
   });
 });
 
-/* ───────────────── START ───────────────── */
+/* ───────────── START ───────────── */
 
 server.listen(PORT, () => {
   console.log(`Hi Presence signaling + TURN running on ${PORT}`);

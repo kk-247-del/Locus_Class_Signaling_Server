@@ -2,7 +2,6 @@ import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
-import fetch from 'node-fetch';
 
 const PORT = Number(process.env.PORT || 10000);
 
@@ -25,7 +24,6 @@ app.get('/turn', async (_, res) => {
   try {
     const response = await fetch(process.env.TURN_ENDPOINT, {
       headers: {
-        Authorization: `Bearer ${process.env.TURN_API_KEY}`,
         Accept: 'application/json',
       },
     });

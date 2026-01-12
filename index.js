@@ -7,11 +7,13 @@ const PORT = Number(process.env.PORT || 10000);
 
 const app = express();
 
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
-}));
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'OPTIONS'],
+    allowedHeaders: ['Accept', 'Content-Type', 'Cache-Control'],
+  })
+);
 
 app.options('*', cors());
 

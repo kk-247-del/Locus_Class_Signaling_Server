@@ -11,7 +11,7 @@ app.use(cors());
 /* ───────── HEALTH CHECK (CRITICAL) ───────── */
 app.get('/', (_, res) => {
   res.status(200).send('Hi Presence signaling alive');
-});
+});                             
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });

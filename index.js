@@ -13,7 +13,9 @@ const wss = new WebSocketServer({ server });
 
 /*
 rooms: Map<roomId, {
-  peers: Map<WebSocket, senderId>
+  peers: Map<WebSocket, senderId>,
+  offer: null | object,
+  answer: null | object
 }>
 */
 const rooms = new Map();
@@ -35,6 +37,10 @@ function broadcast(roomId, except, msg) {
   }
 }
 
+function destroyRoom(roomId) {
+  rooms.delete(roomId);
+}
+
 wss.on('connection', (ws) => {
   let joinedRoom = null;
 
@@ -49,13 +55,14 @@ wss.on('connection', (ws) => {
     const { type, room, payload, sender } = msg;
     if (!type || !room) return;
 
-    /* ───────── JOIN ───────── */
     if (type === 'join') {
       joinedRoom = room;
 
       if (!rooms.has(room)) {
         rooms.set(room, {
           peers: new Map(),
+          offer: null,
+          answer: null,
         });
       }
 
@@ -63,7 +70,7 @@ wss.on('connection', (ws) => {
       r.peers.set(ws, sender);
 
       const peers = Array.from(r.peers.values());
-      const offererId = peers[0]; // first joiner is offerer
+      const offererId = peers[0]; // first joiner only
 
       // Notify all peers
       for (const peerWs of r.peers.keys()) {
@@ -77,26 +84,37 @@ wss.on('connection', (ws) => {
         });
       }
 
-      // If quorum reached (2), declare ready
-      if (r.peers.size === 2) {
-        for (const peerWs of r.peers.keys()) {
-          send(peerWs, {
-            type: 'moment-ready',
-            room,
-            payload: {},
-          });
-        }
-      }
-
       return;
     }
 
     if (!joinedRoom) return;
+    const r = rooms.get(joinedRoom);
+    if (!r) return;
 
-    /* ───────── OFFER / ANSWER / ICE ───────── */
-    if (type === 'offer' || type === 'answer' || type === 'candidate') {
+    if (type === 'offer') {
+      // Always overwrite stale offers
+      r.offer = {
+        type: 'offer',
+        room: joinedRoom,
+        payload,
+      };
+      broadcast(joinedRoom, ws, r.offer);
+      return;
+    }
+
+    if (type === 'answer') {
+      r.answer = {
+        type: 'answer',
+        room: joinedRoom,
+        payload,
+      };
+      broadcast(joinedRoom, ws, r.answer);
+      return;
+    }
+
+    if (type === 'candidate') {
       broadcast(joinedRoom, ws, {
-        type,
+        type: 'candidate',
         room: joinedRoom,
         payload,
       });
@@ -105,12 +123,15 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (!joinedRoom) return;
+
     const r = rooms.get(joinedRoom);
     if (!r) return;
 
     r.peers.delete(ws);
-    if (r.peers.size === 0) {
-      rooms.delete(joinedRoom);
+
+    // HARD RESET when any peer leaves
+    if (r.peers.size < 2) {
+      destroyRoom(joinedRoom);
     }
   });
 });

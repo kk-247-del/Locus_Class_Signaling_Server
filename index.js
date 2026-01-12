@@ -24,6 +24,11 @@ const wss = new WebSocketServer({ server });
 
 app.get('/turn', async (_, res) => {
   try {
+    if (!process.env.TURN_ENDPOINT) {
+      res.status(500).json({ error: 'TURN_ENDPOINT not set' });
+      return;
+    }
+
     const response = await fetch(process.env.TURN_ENDPOINT, {
       headers: {
         Accept: 'application/json',

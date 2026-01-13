@@ -7,10 +7,15 @@ const PORT = Number(process.env.PORT || 10000);
 
 const app = express();
 
+/* ───────────────── CORS (CRITICAL) ───────────────── */
+
 app.use(cors({
   origin: '*',
   methods: ['GET', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
+  allowedHeaders: [
+    'Content-Type',
+    'Cache-Control',   // ← REQUIRED
+  ],
 }));
 
 app.options('*', cors());
@@ -34,6 +39,7 @@ app.get('/turn', async (_, res) => {
     }
 
     const data = await response.json();
+
     res.setHeader('Cache-Control', 'no-store');
     res.json(data);
   } catch {
@@ -47,14 +53,11 @@ const server = http.createServer(app);
 
 const wss = new WebSocketServer({
   server,
-  path: '/signal',   // ← CRITICAL
+  path: '/signal', // ← MUST MATCH CLIENT
 });
 
 /*
-rooms: Map<roomId, {
-  peers: Set<WebSocket>,
-  offererId: string
-}>
+rooms: single-use only
 */
 const rooms = new Map();
 
@@ -81,7 +84,6 @@ function destroyRoom(roomId) {
 
 wss.on('connection', (ws) => {
   let joinedRoom = null;
-  let selfId = null;
 
   ws.on('message', (raw) => {
     let msg;
@@ -96,7 +98,6 @@ wss.on('connection', (ws) => {
 
     if (type === 'join') {
       joinedRoom = room;
-      selfId = sender;
 
       rooms.set(room, {
         peers: new Set([ws]),
@@ -136,5 +137,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Signaling server running on ${PORT}`);
+  console.log(`Signaling + TURN running on ${PORT}`);
 });

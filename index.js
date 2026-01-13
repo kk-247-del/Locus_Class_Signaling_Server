@@ -54,7 +54,6 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 /*
-rooms: single-use only
 Map<roomId, {
   peers: Set<WebSocket>,
   offererId: string
@@ -100,18 +99,33 @@ wss.on('connection', (ws) => {
     if (type === 'join') {
       joinedRoom = room;
 
-      // Single-use room: overwrite any previous state
-      rooms.set(room, {
-        peers: new Set([ws]),
-        offererId: sender,
-      });
+      let entry = rooms.get(room);
+
+      if (!entry) {
+        entry = {
+          peers: new Set(),
+          offererId: sender,
+        };
+        rooms.set(room, entry);
+      }
+
+      entry.peers.add(ws);
 
       send(ws, {
         type: 'peer-present',
         room,
         payload: {
-          count: 1,
-          offererId: sender,
+          count: entry.peers.size,
+          offererId: entry.offererId,
+        },
+      });
+
+      broadcast(room, ws, {
+        type: 'peer-present',
+        room,
+        payload: {
+          count: entry.peers.size,
+          offererId: entry.offererId,
         },
       });
 
@@ -130,11 +144,21 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (joinedRoom) destroyRoom(joinedRoom);
+    if (!joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+
+    room.peers.delete(ws);
+    if (room.peers.size === 0) destroyRoom(joinedRoom);
   });
 
   ws.on('error', () => {
-    if (joinedRoom) destroyRoom(joinedRoom);
+    if (!joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+
+    room.peers.delete(ws);
+    if (room.peers.size === 0) destroyRoom(joinedRoom);
   });
 });
 

@@ -12,13 +12,13 @@ if (!process.env.TURN_ENDPOINT) {
 
 const app = express();
 
-/* ───────────────── CORS (TURN) ───────────────── */
+/* ───────────────── CORS (FIXED) ───────────────── */
 
 app.use(
   cors({
     origin: '*',
     methods: ['GET', 'OPTIONS'],
-    allowedHeaders: ['Content-Type'],
+    allowedHeaders: ['Content-Type', 'Cache-Control'],
   })
 );
 
@@ -29,7 +29,9 @@ app.options('*', cors());
 app.get('/turn', async (_req, res) => {
   try {
     const upstream = await fetch(process.env.TURN_ENDPOINT, {
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json',
+      },
     });
 
     if (!upstream.ok) {
@@ -136,7 +138,7 @@ wss.on('connection', (ws) => {
     }
   });
 
-  /* ───────────── HARD RESET ON CLOSE (CRITICAL FIX) ───────────── */
+  /* ───────────── HARD RESET ON CLOSE (CRITICAL) ───────────── */
 
   ws.on('close', () => {
     if (!joinedRoom) return;

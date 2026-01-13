@@ -7,14 +7,14 @@ const PORT = Number(process.env.PORT || 10000);
 
 const app = express();
 
-/* ───────────────── CORS (CRITICAL) ───────────────── */
+/* ───────────────── CORS (CRITICAL FOR /turn) ───────────────── */
 
 app.use(cors({
   origin: '*',
   methods: ['GET', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
-    'Cache-Control',   // ← REQUIRED
+    'Cache-Control',
   ],
 }));
 
@@ -49,15 +49,16 @@ app.get('/turn', async (_, res) => {
 
 const server = http.createServer(app);
 
-/* ───────────────── WEBSOCKET ───────────────── */
+/* ───────────────── WEBSOCKET (ROOT PATH) ───────────────── */
 
-const wss = new WebSocketServer({
-  server,
-  path: '/signal', // ← MUST MATCH CLIENT
-});
+const wss = new WebSocketServer({ server });
 
 /*
 rooms: single-use only
+Map<roomId, {
+  peers: Set<WebSocket>,
+  offererId: string
+}>
 */
 const rooms = new Map();
 
@@ -99,6 +100,7 @@ wss.on('connection', (ws) => {
     if (type === 'join') {
       joinedRoom = room;
 
+      // Single-use room: overwrite any previous state
       rooms.set(room, {
         peers: new Set([ws]),
         offererId: sender,

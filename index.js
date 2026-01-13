@@ -42,7 +42,13 @@ app.get('/turn', async (_, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+
+/* ───────────────── WEBSOCKET ───────────────── */
+
+const wss = new WebSocketServer({
+  server,
+  path: '/signal',   // ← CRITICAL
+});
 
 /*
 rooms: Map<roomId, {
@@ -73,8 +79,6 @@ function destroyRoom(roomId) {
   rooms.delete(roomId);
 }
 
-/* ───────────────── WEBSOCKET ───────────────── */
-
 wss.on('connection', (ws) => {
   let joinedRoom = null;
   let selfId = null;
@@ -94,26 +98,19 @@ wss.on('connection', (ws) => {
       joinedRoom = room;
       selfId = sender;
 
-      if (!rooms.has(room)) {
-        rooms.set(room, {
-          peers: new Set(),
-          offererId: sender, // first joiner wins
-        });
-      }
+      rooms.set(room, {
+        peers: new Set([ws]),
+        offererId: sender,
+      });
 
-      const r = rooms.get(room);
-      r.peers.add(ws);
-
-      for (const peer of r.peers) {
-        send(peer, {
-          type: 'peer-present',
-          room,
-          payload: {
-            count: r.peers.size,
-            offererId: r.offererId,
-          },
-        });
-      }
+      send(ws, {
+        type: 'peer-present',
+        room,
+        payload: {
+          count: 1,
+          offererId: sender,
+        },
+      });
 
       return;
     }
@@ -130,18 +127,14 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (!joinedRoom) return;
-
-    // HARD RULE: room is dead once anyone leaves
-    destroyRoom(joinedRoom);
+    if (joinedRoom) destroyRoom(joinedRoom);
   });
 
   ws.on('error', () => {
-    if (!joinedRoom) return;
-    destroyRoom(joinedRoom);
+    if (joinedRoom) destroyRoom(joinedRoom);
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`Hi Presence signaling running on ${PORT}`);
+  console.log(`Signaling server running on ${PORT}`);
 });

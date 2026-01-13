@@ -5,57 +5,49 @@ import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.PORT || 10000);
 
-if (!process.env.TURN_ENDPOINT) {
-  console.error('TURN_ENDPOINT not set');
-  process.exit(1);
-}
-
 const app = express();
 
-/* ───────────────── CORS (FIXED) ───────────────── */
-
-app.use(
-  cors({
-    origin: '*',
-    methods: ['GET', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Cache-Control'],
-  })
-);
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+}));
 
 app.options('*', cors());
 
 /* ───────────────── TURN ENDPOINT ───────────────── */
 
-app.get('/turn', async (_req, res) => {
+app.get('/turn', async (_, res) => {
   try {
-    const upstream = await fetch(process.env.TURN_ENDPOINT, {
-      headers: {
-        Accept: 'application/json',
-      },
+    if (!process.env.TURN_ENDPOINT) {
+      res.status(500).json({ error: 'TURN_ENDPOINT not set' });
+      return;
+    }
+
+    const response = await fetch(process.env.TURN_ENDPOINT, {
+      headers: { Accept: 'application/json' },
     });
 
-    if (!upstream.ok) {
+    if (!response.ok) {
       res.status(502).json({ error: 'TURN upstream failure' });
       return;
     }
 
-    const data = await upstream.json();
-
+    const data = await response.json();
     res.setHeader('Cache-Control', 'no-store');
     res.json(data);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'TURN service unavailable' });
   }
 });
-
-/* ───────────────── SIGNALING ───────────────── */
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 /*
 rooms: Map<roomId, {
-  peers: Map<WebSocket, senderId>
+  peers: Set<WebSocket>,
+  offererId: string
 }>
 */
 const rooms = new Map();
@@ -70,9 +62,9 @@ function broadcast(roomId, except, msg) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  for (const ws of room.peers.keys()) {
-    if (ws !== except && ws.readyState === ws.OPEN) {
-      send(ws, msg);
+  for (const peer of room.peers) {
+    if (peer !== except && peer.readyState === peer.OPEN) {
+      send(peer, msg);
     }
   }
 }
@@ -81,10 +73,11 @@ function destroyRoom(roomId) {
   rooms.delete(roomId);
 }
 
-/* ───────────────── WS HANDLER ───────────────── */
+/* ───────────────── WEBSOCKET ───────────────── */
 
 wss.on('connection', (ws) => {
   let joinedRoom = null;
+  let selfId = null;
 
   ws.on('message', (raw) => {
     let msg;
@@ -99,35 +92,33 @@ wss.on('connection', (ws) => {
 
     if (type === 'join') {
       joinedRoom = room;
+      selfId = sender;
 
       if (!rooms.has(room)) {
         rooms.set(room, {
-          peers: new Map(),
+          peers: new Set(),
+          offererId: sender, // first joiner wins
         });
       }
 
       const r = rooms.get(room);
-      r.peers.set(ws, sender);
+      r.peers.add(ws);
 
-      const peers = Array.from(r.peers.values());
-      const offererId = peers[0];
-
-      for (const peerWs of r.peers.keys()) {
-        send(peerWs, {
+      for (const peer of r.peers) {
+        send(peer, {
           type: 'peer-present',
           room,
           payload: {
             count: r.peers.size,
-            offererId,
+            offererId: r.offererId,
           },
         });
       }
+
       return;
     }
 
     if (!joinedRoom) return;
-    const r = rooms.get(joinedRoom);
-    if (!r) return;
 
     if (type === 'offer' || type === 'answer' || type === 'candidate') {
       broadcast(joinedRoom, ws, {
@@ -138,10 +129,10 @@ wss.on('connection', (ws) => {
     }
   });
 
-  /* ───────────── HARD RESET ON CLOSE (CRITICAL) ───────────── */
-
   ws.on('close', () => {
     if (!joinedRoom) return;
+
+    // HARD RULE: room is dead once anyone leaves
     destroyRoom(joinedRoom);
   });
 
@@ -151,8 +142,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-/* ───────────────── START ───────────────── */
-
 server.listen(PORT, () => {
-  console.log(`Hi Presence signaling + TURN running on ${PORT}`);
+  console.log(`Hi Presence signaling running on ${PORT}`);
 });

@@ -7,15 +7,12 @@ const PORT = Number(process.env.PORT || 10000);
 
 const app = express();
 
-/* ───────────────── CORS (CRITICAL FOR /turn) ───────────────── */
+/* ───────────────── CORS ───────────────── */
 
 app.use(cors({
   origin: '*',
   methods: ['GET', 'OPTIONS'],
-  allowedHeaders: [
-    'Content-Type',
-    'Cache-Control',
-  ],
+  allowedHeaders: ['Content-Type', 'Cache-Control'],
 }));
 
 app.options('*', cors());
@@ -39,7 +36,6 @@ app.get('/turn', async (_, res) => {
     }
 
     const data = await response.json();
-
     res.setHeader('Cache-Control', 'no-store');
     res.json(data);
   } catch {
@@ -49,14 +45,13 @@ app.get('/turn', async (_, res) => {
 
 const server = http.createServer(app);
 
-/* ───────────────── WEBSOCKET (ROOT PATH) ───────────────── */
+/* ───────────────── WEBSOCKET ───────────────── */
 
 const wss = new WebSocketServer({ server });
 
 /*
 Map<roomId, {
-  peers: Set<WebSocket>,
-  offererId: string
+  peers: WebSocket[],
 }>
 */
 const rooms = new Map();
@@ -78,10 +73,6 @@ function broadcast(roomId, except, msg) {
   }
 }
 
-function destroyRoom(roomId) {
-  rooms.delete(roomId);
-}
-
 wss.on('connection', (ws) => {
   let joinedRoom = null;
 
@@ -93,30 +84,28 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    const { type, room, payload, sender } = msg;
+    const { type, room, payload } = msg;
     if (!type || !room) return;
 
     if (type === 'join') {
       joinedRoom = room;
 
       let entry = rooms.get(room);
-
       if (!entry) {
-        entry = {
-          peers: new Set(),
-          offererId: sender,
-        };
+        entry = { peers: [] };
         rooms.set(room, entry);
       }
 
-      entry.peers.add(ws);
+      entry.peers.push(ws);
+
+      const isOfferer = entry.peers.length === 1;
 
       send(ws, {
         type: 'peer-present',
         room,
         payload: {
-          count: entry.peers.size,
-          offererId: entry.offererId,
+          count: entry.peers.length,
+          offerer: isOfferer,
         },
       });
 
@@ -124,8 +113,8 @@ wss.on('connection', (ws) => {
         type: 'peer-present',
         room,
         payload: {
-          count: entry.peers.size,
-          offererId: entry.offererId,
+          count: entry.peers.length,
+          offerer: !isOfferer,
         },
       });
 
@@ -148,8 +137,10 @@ wss.on('connection', (ws) => {
     const room = rooms.get(joinedRoom);
     if (!room) return;
 
-    room.peers.delete(ws);
-    if (room.peers.size === 0) destroyRoom(joinedRoom);
+    room.peers = room.peers.filter(p => p !== ws);
+    if (room.peers.length === 0) {
+      rooms.delete(joinedRoom);
+    }
   });
 
   ws.on('error', () => {
@@ -157,8 +148,10 @@ wss.on('connection', (ws) => {
     const room = rooms.get(joinedRoom);
     if (!room) return;
 
-    room.peers.delete(ws);
-    if (room.peers.size === 0) destroyRoom(joinedRoom);
+    room.peers = room.peers.filter(p => p !== ws);
+    if (room.peers.length === 0) {
+      rooms.delete(joinedRoom);
+    }
   });
 });
 

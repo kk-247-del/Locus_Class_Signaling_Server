@@ -51,7 +51,8 @@ const wss = new WebSocketServer({ server });
 
 /*
 Map<roomId, {
-  peers: WebSocket[],
+  peers: Set<WebSocket>,
+  offererId: string
 }>
 */
 const rooms = new Map();
@@ -84,7 +85,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    const { type, room, payload } = msg;
+    const { type, room, payload, sender } = msg;
     if (!type || !room) return;
 
     if (type === 'join') {
@@ -92,20 +93,21 @@ wss.on('connection', (ws) => {
 
       let entry = rooms.get(room);
       if (!entry) {
-        entry = { peers: [] };
+        entry = {
+          peers: new Set(),
+          offererId: sender, // first peer is always offerer
+        };
         rooms.set(room, entry);
       }
 
-      entry.peers.push(ws);
-
-      const isOfferer = entry.peers.length === 1;
+      entry.peers.add(ws);
 
       send(ws, {
         type: 'peer-present',
         room,
         payload: {
-          count: entry.peers.length,
-          offerer: isOfferer,
+          count: entry.peers.size,
+          offererId: entry.offererId,
         },
       });
 
@@ -113,8 +115,8 @@ wss.on('connection', (ws) => {
         type: 'peer-present',
         room,
         payload: {
-          count: entry.peers.length,
-          offerer: !isOfferer,
+          count: entry.peers.size,
+          offererId: entry.offererId,
         },
       });
 
@@ -137,8 +139,8 @@ wss.on('connection', (ws) => {
     const room = rooms.get(joinedRoom);
     if (!room) return;
 
-    room.peers = room.peers.filter(p => p !== ws);
-    if (room.peers.length === 0) {
+    room.peers.delete(ws);
+    if (room.peers.size === 0) {
       rooms.delete(joinedRoom);
     }
   });
@@ -148,8 +150,8 @@ wss.on('connection', (ws) => {
     const room = rooms.get(joinedRoom);
     if (!room) return;
 
-    room.peers = room.peers.filter(p => p !== ws);
-    if (room.peers.length === 0) {
+    room.peers.delete(ws);
+    if (room.peers.size === 0) {
       rooms.delete(joinedRoom);
     }
   });
